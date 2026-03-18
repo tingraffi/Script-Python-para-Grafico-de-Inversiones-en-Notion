@@ -1,62 +1,82 @@
-# 📈 Notion Investment Dashboard
+# 📈 Notion & Telegram Investment Dashboard
 
-Un script automatizado en Python que extrae el registro de inversiones desde una base de datos de Notion, cruza los datos con cotizaciones en tiempo real y genera un gráfico de rendimiento actualizado. Ideal para automatizar el seguimiento de finanzas personales, calculando tanto rendimientos de interés simple (ej. cuentas remuneradas) como el valor en vivo de criptomonedas, todo unificado en Pesos Argentinos (ARS).
+Un bot automatizado en Python que extrae el registro de inversiones desde una base de datos de Notion, cruza los datos con cotizaciones en tiempo real y **te envía un reporte gráfico actualizado directamente a tu Telegram**.
+
+Ideal para automatizar el seguimiento de finanzas personales, calculando tanto rendimientos de interés simple (ej. cuentas remuneradas) como el valor en vivo de criptomonedas, todo unificado en Pesos Argentinos (ARS). Preparado para correr 24/7 en una Raspberry Pi o cualquier servidor usando Docker.
 
 ## ✨ Características
 
-* **Integración con Notion API:** Lee dinámicamente tu portafolio directamente desde tu workspace.
-* **Cotizaciones en Tiempo Real:**
-  * Conexión a la API de Binance para extraer el precio de BTC/USDT.
-  * Conexión a DolarAPI para obtener la cotización actual del Dólar Cripto en Argentina.
-* **Cálculo de Rendimientos:** Computa automáticamente los intereses generados por días transcurridos según la TNA configurada.
-* **Generación de Gráficos:** Utiliza matplotlib para exportar una imagen (.png) con el estado actual del portafolio, total invertido y ganancias netas.
+- **🤖 Bot de Telegram Integrado:**
+  - Recibí un reporte diario automático todos los días a las 09:00 AM.
+  - Pedile el gráfico en tiempo real al bot usando los comandos `/dashboard` o `/reporte`.
+- **📊 Integración con Notion API:** Lee dinámicamente tu portafolio directamente desde tu workspace.
+- **⏱️ Cotizaciones en Tiempo Real:**
+  - Conexión a la API de Binance para extraer el precio de BTC/USDT.
+  - Conexión a DolarAPI para obtener la cotización actual del Dólar Cripto en Argentina.
+- **🧮 Cálculo de Rendimientos:** Computa automáticamente los intereses generados por días transcurridos según la TNA configurada.
+- **🐳 Docker Ready:** Configurado para ejecutarse de forma continua y ligera en segundo plano (ideal para Raspberry Pi).
 
-## 🚀 Instalación y Uso
+---
+
+## 🚀 Instalación y Uso (Local)
 
 1. **Cloná este repositorio:**
-
-```bash
-git clone https://github.com/tingraffi/notion-investment-dashboard.git
-cd notion-investment-dashboard
-```
+   ```bash
+   git clone https://github.com/tingraffi/notion-investment-dashboard.git
+   cd notion-investment-dashboard
+   ```
 
 2. **Instalá las dependencias necesarias:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```bash
-pip install requests matplotlib
-```
-
-3. **Configuración en Notion:**
-
-   - Creá una integración interna en [Notion Developers](https://developers.notion.com/) y obtené tu **Internal Integration Secret**.
-   - Compartí tu base de datos de **Inversiones** con la integración que acabás de crear.
-   - Copiá el **ID de tu base de datos** (la cadena alfanumérica en la URL).
+3. **Configuración de Notion y Telegram:**
+   - **Notion:** Creá una integración interna en [Notion Developers](https://developers.notion.com), obtené tu *Internal Integration Secret* y compartí tu base de datos de Inversiones con la integración.
+   - **Telegram:** Hablá con `@BotFather` en Telegram para crear un bot y obtener el Token API. Luego, usá `@userinfobot` para obtener tu Chat ID.
 
 4. **Configuración del Script:**
+   Abrí `scriptInversiones.py` y reemplazá las variables con tus credenciales:
+   ```python
+   NOTION_TOKEN = 'tu_secreto_notion'
+   DATABASE_ID = 'tu_id_de_base_de_datos'
+   TELEGRAM_TOKEN = 'tu_token_de_telegram'
+   CHAT_ID = 'tu_chat_id'
+   ```
 
-   Abrí el archivo principal y reemplazá las variables de entorno con tus credenciales:
+5. **Ejecutá el bot:**
+   ```bash
+   python scriptInversiones.py
+   ```
 
-```python
-NOTION_TOKEN = 'tu_secreto_aqui'
-DATABASE_ID = 'tu_id_de_base_de_datos_aqui'
-```
+---
 
-5. **Ejecutá el script:**
+## 🐳 Despliegue con Docker (Recomendado para Raspberry Pi)
 
-```bash
-python scriptInversiones.py
-```
+Si querés que el bot quede corriendo 24/7 en un servidor o Raspberry Pi sin preocuparte por caídas:
+
+1. **Construí la imagen de Docker:**
+   ```bash
+   docker build -t inversiones-notion .
+   ```
+
+2. **Ejecutá el contenedor en segundo plano:**
+   ```bash
+   docker run -d --restart unless-stopped --name bot_inversiones inversiones-notion
+   ```
+
+> El flag `--restart unless-stopped` asegura que el bot vuelva a encenderse solo si se reinicia la Raspberry Pi.
+
+---
 
 ## 🛠️ Estructura de la Base de Datos en Notion
 
 Para que el script funcione correctamente, la tabla en Notion debe contener las siguientes propiedades exactas:
 
-| Propiedad | Tipo |
-|---|---|
-| Activo | Select |
-| Fecha | Date |
-| Inversion Inicial (ARS/USDT) | Number |
-| Cantidad Obtenida | Number — Para criptomonedas |
-| TNA (%) | Number — Para cuentas remuneradas |
-
-TNA (%) (Number) - Para cuentas remuneradas
+| Propiedad | Tipo | Notas |
+|---|---|---|
+| Activo | Select | Nombre de la inversión (ej. `Bitcoin`, `Frasco NaranjaX`) |
+| Fecha | Date | Fecha en la que se realizó la inversión |
+| Inversion Inicial (ARS/USDT) | Number | Capital inicial invertido |
+| Cantidad Obtenida | Number | Solo para criptomonedas (ej. cantidad de BTC) |
+| TNA (%) | Number | Solo para cuentas remuneradas (ej. `45.5`) |
