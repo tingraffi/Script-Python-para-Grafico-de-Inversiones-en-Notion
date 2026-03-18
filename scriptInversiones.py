@@ -7,6 +7,8 @@ from matplotlib.ticker import FuncFormatter
 # --- CONFIGURACIÓN ---
 NOTION_TOKEN = '' 
 DATABASE_ID = '' 
+TELEGRAM_TOKEN = ''
+CHAT_ID = ''
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
     "Content-Type": "application/json",
@@ -144,7 +146,6 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     def formato_miles(valor):
         return f"${valor:,.0f}k" if abs(valor) >= 1 else f"${valor:,.2f}k"
         
-    # --- PREPARAR DATOS ---
     nombres = [d['nombre'] for d in datos]
     iniciales = [d['inicial'] for d in datos]
     actuales = [d['actual'] for d in datos]
@@ -153,19 +154,15 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     total_actual = sum(actuales)
     total_ganado = total_actual - total_invertido
     
-    # --- CONFIGURAR LA FIGURA (DASHBOARD) ---
     fig = plt.figure(figsize=(16, 10))
     gs = fig.add_gridspec(2, 1, height_ratios=[0.72, 1.48], hspace=0.26)
     fig.suptitle(f"Dashboard de Inversiones | Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}", fontsize=22, fontweight='bold')
     
-    # 1. GRÁFICO BARRAS DOBLES (Arriba, ocupa todo el ancho)
     ax1 = fig.add_subplot(gs[0, 0])
     x = np.arange(len(nombres))
     width = 0.35
     
     ax1.bar(x - width/2, iniciales, width, color='#ced4da', label='Inversión Inicial')
-    
-    # Colores dinámicos: Verde si hay ganancia, Rojo si hay pérdida
     colores_actual = ['#2ecc71' if d['actual'] >= d['inicial'] else '#e74c3c' for d in datos]
     bars_actual = ax1.bar(x + width/2, actuales, width, color=colores_actual, label='Valor Actual')
     
@@ -175,18 +172,15 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     etiquetas_x = []
     for d in datos:
         if d['nombre_corto'] == 'Bitcoin':
-            etiquetas_x.append(
-                f"Bitcoin\nBTC: US${precio_btc:,.0f} | ARS ${dolar_cripto:,.0f}\n({d['fecha_label']})"
-            )
+            etiquetas_x.append(f"Bitcoin\nBTC: US${precio_btc:,.0f} | ARS ${dolar_cripto:,.0f}\n({d['fecha_label']})")
         else:
             etiquetas_x.append(d['nombre'])
     ax1.set_xticklabels(etiquetas_x)
     ax1.tick_params(axis='x', labelsize=13)
     ax1.yaxis.set_major_formatter(formato_ars)
     ax1.legend()
-    ax1.set_ylim(0, max(actuales + iniciales) * 1.25) # Más margen arriba
+    ax1.set_ylim(0, max(actuales + iniciales) * 1.25)
     
-    # Etiquetas con % de rendimiento
     for i, bar in enumerate(bars_actual):
         yval = bar.get_height()
         pct = datos[i]['pct']
@@ -194,10 +188,8 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
         texto = f"${yval:,.0f}\n({signo}{pct:.1f}%)"
         ax1.text(bar.get_x() + bar.get_width()/2, yval + (max(actuales)*0.02), texto, ha='center', va='bottom', fontweight='bold', fontsize=13)
 
-    # 2. GRÁFICO DE ANILLO (Abajo a la izquierda)
     gs_bottom = gs[1, 0].subgridspec(1, 2, width_ratios=[0.8, 1.2], wspace=0.30)
     ax2 = fig.add_subplot(gs_bottom[0, 0])
-    # Filtramos los que tienen valor > 0 para que no rompa el gráfico
     act_validos = [d['actual'] for d in datos if d['actual'] > 0]
     nom_validos = [d['nombre_corto'] for d in datos if d['actual'] > 0]
     
@@ -208,12 +200,10 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     plt.setp(autotexts, fontsize=13, fontweight='bold')
     ax2.set_title('Composición del Portafolio')
     
-    # 3. GRÁFICO DE CASCADA Y VARIACIONES (Abajo a la derecha)
     gs_derecha = gs_bottom[0, 1].subgridspec(2, 1, height_ratios=[0.72, 1], hspace=0.62)
     ax3_zoom = fig.add_subplot(gs_derecha[0])
     ax3 = fig.add_subplot(gs_derecha[1])
     
-    # Armamos los escalones de la cascada
     cat_cascada = ['Inversión\nInicial'] + [d['nombre_corto'] for d in datos] + ['Capital\nTotal']
     val_cascada = [total_invertido] + [d['ganancia'] for d in datos] + [total_actual]
     
@@ -222,10 +212,9 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     for d in datos:
         bottoms.append(current if d['ganancia'] >= 0 else current + d['ganancia'])
         current += d['ganancia']
-    bottoms.append(0) # El último (Total) arranca desde 0
+    bottoms.append(0) 
     
     colores_cascada = ['#34495e'] + ['#2ecc71' if d['ganancia'] >= 0 else '#e74c3c' for d in datos] + ['#3498db']
-    
     bars_cascada = ax3.bar(cat_cascada, val_cascada, bottom=bottoms, color=colores_cascada)
     ax3.set_title('Construcción del Capital (Ganancias/Pérdidas)')
     ax3.set_ylabel('Pesos Argentinos (ARS)')
@@ -243,12 +232,12 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     ax3.plot(posiciones_cascada, valores_acumulados, color='#7f8c8d', marker='o', linewidth=1.0, markersize=4, zorder=4)
     
     for i, bar in enumerate(bars_cascada):
-        if i == 0 or i == len(bars_cascada) - 1: # Primera y última barra
+        if i == 0 or i == len(bars_cascada) - 1:
             yval = bar.get_height()
             ax3.text(bar.get_x() + bar.get_width()/2, yval + 22000, f"${yval:,.0f}", ha='center', va='bottom', fontweight='bold', fontsize=14)
-        else: # Escalones intermedios
+        else: 
             yval = bar.get_height()
-            ypos = bottoms[i] + yval/2 # Texto en el medio del escalón
+            ypos = bottoms[i] + yval/2 
             signo = "+" if yval >= 0 else ""
             ax3.text(bar.get_x() + bar.get_width()/2, ypos, f"{signo}${yval:,.0f}", ha='center', va='center', color='white', fontweight='bold', fontsize=12)
 
@@ -256,7 +245,7 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     if ganancias:
         datos_ordenados = sorted(datos, key=lambda item: abs(item['ganancia']), reverse=True)
         nombres_zoom = [d['nombre_corto'] for d in datos_ordenados]
-        ganancias_zoom = [d['ganancia'] / 1000 for d in datos_ordenados]  # Eje en miles de ARS
+        ganancias_zoom = [d['ganancia'] / 1000 for d in datos_ordenados] 
         colores_zoom = ['#2ecc71' if valor >= 0 else '#e74c3c' for valor in ganancias_zoom]
         y_pos = np.arange(len(nombres_zoom))
         barras_zoom = ax3_zoom.barh(y_pos, ganancias_zoom, color=colores_zoom)
@@ -290,11 +279,28 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     else:
         ax3_zoom.axis('off')
 
-    # Ajustes finales y guardado
     fig.subplots_adjust(top=0.91, bottom=0.13)
     plt.savefig('dashboard_inversiones.png', dpi=300, bbox_inches='tight')
-    print("✅ ¡Dashboard generado con éxito! Revisá el archivo: dashboard_inversiones.png")
+    print("✅ ¡Dashboard generado con éxito!")
 
+def enviar_a_telegram(archivo_path, texto):
+    """Envía la imagen generada y un resumen por Telegram."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    try:
+        with open(archivo_path, 'rb') as photo:
+            payload = {'chat_id': CHAT_ID, 'caption': texto, 'parse_mode': 'Markdown'}
+            files = {'photo': photo}
+            res = requests.post(url, data=payload, files=files)
+            if res.status_code == 200:
+                print("✅ Dashboard enviado a Telegram correctamente")
+            else:
+                print(f"❌ Error de Telegram: {res.text}")
+    except Exception as e:
+        print(f"❌ Error al enviar: {e}")
+
+# =========================================================
+# ÚNICO BLOQUE DE EJECUCIÓN PRINCIPAL
+# =========================================================
 if __name__ == '__main__':
     print("Conectando con Notion y APIs...")
     inversiones = leer_inversiones_notion()
@@ -304,3 +310,22 @@ if __name__ == '__main__':
         datos_procesados, p_btc, p_usdt = procesar_datos(inversiones)
         print("Dibujando gráficos...")
         generar_dashboard(datos_procesados, p_btc, p_usdt)
+        
+        # Generar texto de resumen para el mensaje
+        total_inv = sum(d['inicial'] for d in datos_procesados)
+        total_act = sum(d['actual'] for d in datos_procesados)
+        ganancia_total = total_act - total_inv
+        pct_ganancia = (ganancia_total / total_inv * 100) if total_inv > 0 else 0
+        
+        resumen = (
+            f"🚀 *Reporte Diario de Inversiones*\n\n"
+            f"💰 *Invertido:* ${total_inv:,.0f} ARS\n"
+            f"📈 *Valor Actual:* ${total_act:,.0f} ARS\n"
+            f"💵 *Ganancia:* ${ganancia_total:,.0f} ARS "
+            f"({pct_ganancia:.1f}%)\n\n"
+            f"📅 _Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}_"
+        )
+        
+        print("Enviando a Telegram...")
+        enviar_a_telegram('dashboard_inversiones.png', resumen)
+        print("Proceso finalizado con éxito.")
