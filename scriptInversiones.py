@@ -15,6 +15,10 @@ DATABASE_ID = ''
 TELEGRAM_TOKEN = ''
 CHAT_ID = ''
 
+# SP-500 (CEDEAR SPY): configuracion local (NO requiere nuevas columnas en Notion)
+SPY_BINANCE_SYMBOL = 'SPYUSDT'
+SPY_CEDEAR_RATIO = 1
+
 ZONA_HORARIA = pytz.timezone('America/Argentina/Buenos_Aires')
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -31,6 +35,25 @@ def obtener_precio_btc():
     url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
     respuesta = requests.get(url)
     return float(respuesta.json()['price'])
+
+
+def obtener_precio_simbolo_binance(simbolo):
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={simbolo}"
+    respuesta = requests.get(url, timeout=10)
+    if respuesta.status_code != 200:
+        raise ValueError(f"Binance no devolvio precio para {simbolo}. Status: {respuesta.status_code}")
+    data = respuesta.json()
+    if 'price' not in data:
+        raise ValueError(f"Respuesta invalida de Binance para {simbolo}: {data}")
+    return float(data['price'])
+
+
+def obtener_usdt_ars_binance_o_fallback():
+    """Intenta usar USDTARS de Binance; si no existe, usa DolarAPI como respaldo."""
+    try:
+        return obtener_precio_simbolo_binance('USDTARS')
+    except Exception:
+        return obtener_dolar_cripto()
 
 def obtener_dolar_cripto():
     url = "https://dolarapi.com/v1/dolares/cripto"
@@ -53,20 +76,37 @@ def leer_inversiones_notion():
             datos_inv = {'activo': activo, 'fecha': fecha_inv, 'inicial': inv_inicial}
             if activo == 'Bitcoin':
                 datos_inv['cantidad'] = props.get('Cantidad Obtenida', {}).get('number') or 0
+            elif 'SP-500' in activo or 'SPY' in activo:
+                datos_inv['cantidad'] = props.get('Cantidad Obtenida', {}).get('number') or 0
             elif 'Frasco NaranjaX' in activo:
                 datos_inv['tna'] = props.get('TNA (%)', {}).get('number') or 0
             inversiones.append(datos_inv)
     return inversiones
 
 def procesar_datos(inversiones):
-    if not inversiones: return []
-    precio_btc = obtener_precio_btc(); dolar_cripto = obtener_dolar_cripto()
+    if not inversiones:
+        return [], 0, 0
+    precio_btc = obtener_precio_btc()
+    dolar_cripto = obtener_usdt_ars_binance_o_fallback()
     hoy = obtener_hora_local().replace(tzinfo=None)
     datos_agrupados = {}
+    cache_precios = {}
     for inv in inversiones:
         valor_actual_ars = 0
         if inv['activo'] == 'Bitcoin':
             valor_actual_ars = (inv['cantidad'] * precio_btc) * dolar_cripto
+        elif 'SP-500' in inv['activo'] or 'SPY' in inv['activo']:
+            try:
+                simbolo = SPY_BINANCE_SYMBOL
+                if simbolo not in cache_precios:
+                    cache_precios[simbolo] = obtener_precio_simbolo_binance(simbolo)
+                precio_ref_usdt = cache_precios[simbolo]
+                ratio = SPY_CEDEAR_RATIO if SPY_CEDEAR_RATIO else 1
+                precio_estimado_cedear_ars = (precio_ref_usdt / ratio) * dolar_cripto
+                valor_actual_ars = inv.get('cantidad', 0) * precio_estimado_cedear_ars
+            except Exception:
+                # Si el simbolo no existe en Binance, no rompe el dashboard.
+                valor_actual_ars = inv['inicial']
         elif 'Frasco NaranjaX' in inv['activo']:
             dias_pasados = max(0, (hoy - inv['fecha']).days)
             interes = inv['inicial'] * (inv['tna'] / 100) * (dias_pasados / 365)
@@ -184,8 +224,11 @@ def generar_y_enviar_reporte(destino_id):
         datos, btc, usdt = procesar_datos(inv)
         generar_dashboard(datos, btc, usdt)
         total_inv = sum(d['inicial'] for d in datos); total_act = sum(d['actual'] for d in datos)
+        ratio_spy = SPY_CEDEAR_RATIO if SPY_CEDEAR_RATIO else 1
         resumen = (f"🚀 *Reporte de Inversiones*\n\n💰 *Invertido:* ${total_inv:,.0f} ARS\n📈 *Valor Actual:* ${total_act:,.0f} ARS\n"
-                   f"💵 *Ganancia:* ${total_act-total_inv:,.0f} ARS\n\n📅 _Hora Local: {obtener_hora_local().strftime('%H:%M')}_")
+                   f"💵 *Ganancia:* ${total_act-total_inv:,.0f} ARS\n"
+                   f"📌 _Valuacion SP-500 estimada con ratio {ratio_spy} (simbolo {SPY_BINANCE_SYMBOL})_\n\n"
+                   f"📅 _Hora Local: {obtener_hora_local().strftime('%H:%M')}_")
         with open('dashboard_inversiones.png', 'rb') as f:
             bot.send_photo(destino_id, f, caption=resumen, parse_mode='Markdown')
     except Exception as e: print(f"Error: {e}")

@@ -80,3 +80,33 @@ Para que el script funcione correctamente, la tabla en Notion debe contener las 
 | Inversion Inicial (ARS/USDT) | Number | Capital inicial invertido |
 | Cantidad Obtenida | Number | Solo para criptomonedas (ej. cantidad de BTC) |
 | TNA (%) | Number | Solo para cuentas remuneradas (ej. `45.5`) |
+
+### Soporte SP-500 (CEDEAR SPY) sin API de IOL
+
+El script ahora permite valuar una posicion de SP-500/CEDEAR usando Binance como fuente de referencia y calcular ganancia/perdida en ARS.
+
+Se adapta a tu tabla actual de Notion, sin agregar propiedades nuevas. Solo usa estas columnas existentes:
+
+| Propiedad | Tipo | Ejemplo | Nota |
+|---|---|---|---|
+| Activo | Select | `SP-500` o `SPY CEDEAR` | Si contiene `SP-500` o `SPY`, se activa esta logica |
+| Fecha | Date | `2026-04-01` | Fecha de compra |
+| Inversion Inicial (ARS/USDT) | Number | `500000` | Monto invertido en pesos |
+| Cantidad Obtenida | Number | `10` | Cantidad de CEDEARs comprados |
+| TNA (%) | Number | `0` | No se usa para SP-500 |
+
+Configuracion en el script (sin tocar Notion):
+
+- `SPY_BINANCE_SYMBOL = 'SPYUSDT'`
+- `SPY_CEDEAR_RATIO = 1`
+
+Formula de valuacion estimada en ARS:
+
+- Precio Cedear ARS estimado = (Precio Binance en USDT / Ratio CEDEAR) * USDTARS
+- Valor actual ARS = Cantidad Obtenida * Precio Cedear ARS estimado
+- % rendimiento = ((Valor actual - Inversion inicial) / Inversion inicial) * 100
+
+Notas:
+
+- El tipo de cambio se intenta obtener con `USDTARS` en Binance. Si no esta disponible en tu region, usa DolarAPI como respaldo.
+- Si el simbolo configurado no existe en Binance, el bot no se cae: toma temporalmente el valor actual igual al inicial para esa fila.
