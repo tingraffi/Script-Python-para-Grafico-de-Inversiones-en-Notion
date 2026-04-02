@@ -12,8 +12,11 @@ Ideal para automatizar el seguimiento de finanzas personales, calculando tanto r
 - **📊 Integración con Notion API:** Lee dinámicamente tu portafolio directamente desde tu workspace.
 - **⏱️ Cotizaciones en Tiempo Real:**
   - Conexión a la API de Binance para extraer el precio de BTC/USDT.
-  - Conexión a DolarAPI para obtener la cotización actual del Dólar Cripto en Argentina.
+   - Conexión a Yahoo Finance para tomar la referencia internacional de SPY/CEDEAR.
+   - Conexión a TradingView como fuente local para CEDEARs argentinos cuando está disponible.
+   - Conexión a DolarAPI como respaldo para obtener la cotización actual del Dólar Cripto en Argentina.
 - **🧮 Cálculo de Rendimientos:** Computa automáticamente los intereses generados por días transcurridos según la TNA configurada.
+- **🧾 Soporte CEDEAR / SPY:** Valúa posiciones de SP-500/CEDEAR usando precio internacional y tipo de cambio, con fallback seguro si falla alguna fuente.
 - **🐳 Docker Ready:** Configurado para ejecutarse de forma continua y ligera en segundo plano (ideal para Raspberry Pi).
 
 ---
@@ -81,32 +84,41 @@ Para que el script funcione correctamente, la tabla en Notion debe contener las 
 | Cantidad Obtenida | Number | Solo para criptomonedas (ej. cantidad de BTC) |
 | TNA (%) | Number | Solo para cuentas remuneradas (ej. `45.5`) |
 
-### Soporte SP-500 (CEDEAR SPY) sin API de IOL
+### Soporte SP-500 / CEDEAR SPY
 
-El script ahora permite valuar una posicion de SP-500/CEDEAR usando Binance como fuente de referencia y calcular ganancia/perdida en ARS.
+El script permite valuar una posición de SP-500/CEDEAR usando Yahoo Finance como referencia internacional, TradingView como precio local cuando está disponible y DolarAPI como respaldo para el tipo de cambio.
 
-Se adapta a tu tabla actual de Notion, sin agregar propiedades nuevas. Solo usa estas columnas existentes:
+Se adapta a tu tabla actual de Notion, sin agregar propiedades nuevas obligatorias. Usa estas columnas existentes:
 
 | Propiedad | Tipo | Ejemplo | Nota |
 |---|---|---|---|
-| Activo | Select | `SP-500` o `SPY CEDEAR` | Si contiene `SP-500` o `SPY`, se activa esta logica |
+| Activo | Select | `SP-500` o `SPY CEDEAR` | Si contiene `SP-500` o `SPY`, se activa esta lógica |
 | Fecha | Date | `2026-04-01` | Fecha de compra |
 | Inversion Inicial (ARS/USDT) | Number | `500000` | Monto invertido en pesos |
 | Cantidad Obtenida | Number | `10` | Cantidad de CEDEARs comprados |
 | TNA (%) | Number | `0` | No se usa para SP-500 |
 
-Configuracion en el script (sin tocar Notion):
+Campos opcionales que el script también puede leer para mejorar la estimación:
 
-- `SPY_BINANCE_SYMBOL = 'SPYUSDT'`
+- `Cotizacion de Compra`
+- `SPY Compra (USDT)`
+- `USDT/ARS Compra`
+- `Ratio CEDEAR SPY`
+
+Configuración en el script (sin tocar Notion):
+
+- `SPY_YAHOO_TICKER = 'SPY'`
 - `SPY_CEDEAR_RATIO = 1`
+- `SPY_LOCAL_SYMBOLS = ['BCBA:SPY', 'BCBA:SPYD', 'BCBA:SPYC']`
 
-Formula de valuacion estimada en ARS:
+Fórmula de valuación estimada en ARS:
 
-- Precio Cedear ARS estimado = (Precio Binance en USDT / Ratio CEDEAR) * USDTARS
-- Valor actual ARS = Cantidad Obtenida * Precio Cedear ARS estimado
+- Precio CEDEAR ARS estimado = (Precio SPY en USD / Ratio CEDEAR) * USDTARS
+- Valor actual ARS = Cantidad Obtenida * Precio CEDEAR ARS estimado
 - % rendimiento = ((Valor actual - Inversion inicial) / Inversion inicial) * 100
 
 Notas:
 
-- El tipo de cambio se intenta obtener con `USDTARS` en Binance. Si no esta disponible en tu region, usa DolarAPI como respaldo.
-- Si el simbolo configurado no existe en Binance, el bot no se cae: toma temporalmente el valor actual igual al inicial para esa fila.
+- Si existe una cotización local del CEDEAR en TradingView, el bot la usa primero.
+- Si TradingView no responde, toma la referencia de Yahoo Finance y la convierte a ARS.
+- Si falta información suficiente para estimar el rendimiento, el bot no se cae: toma temporalmente el valor actual igual al inicial para esa fila.

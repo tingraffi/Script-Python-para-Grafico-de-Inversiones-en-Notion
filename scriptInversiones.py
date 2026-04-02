@@ -1,6 +1,7 @@
 import requests
 import matplotlib.pyplot as plt
 import numpy as np
+import re
 from datetime import datetime
 from matplotlib.ticker import FuncFormatter
 import telebot
@@ -15,9 +16,11 @@ DATABASE_ID = ''
 TELEGRAM_TOKEN = ''
 CHAT_ID = ''
 
-# SP-500 (CEDEAR SPY): configuracion local (NO requiere nuevas columnas en Notion)
-SPY_BINANCE_SYMBOL = 'SPYUSDT'
+# SP-500 (CEDEAR SPY): referencia internacional via Yahoo Finance
+SPY_YAHOO_TICKER = 'SPY'
 SPY_CEDEAR_RATIO = 1
+SPY_LOCAL_SYMBOLS = ['BCBA:SPY', 'BCBA:SPYD', 'BCBA:SPYC']
+TRADINGVIEW_SCANNER_URL = 'https://scanner.tradingview.com/argentina/scan'
 
 ZONA_HORARIA = pytz.timezone('America/Argentina/Buenos_Aires')
 HEADERS = {
@@ -27,6 +30,10 @@ HEADERS = {
 }
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+def es_activo_sp500(nombre_activo):
+    normalizado = re.sub(r'[^A-Z0-9]', '', (nombre_activo or '').upper())
+    return 'SP500' in normalizado or 'SPY' in normalizado
 
 def obtener_hora_local():
     return datetime.now(ZONA_HORARIA)
@@ -46,6 +53,49 @@ def obtener_precio_simbolo_binance(simbolo):
     if 'price' not in data:
         raise ValueError(f"Respuesta invalida de Binance para {simbolo}: {data}")
     return float(data['price'])
+
+
+def obtener_precio_spy_yahoo(ticker=SPY_YAHOO_TICKER):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d"
+    respuesta = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+    if respuesta.status_code != 200:
+        raise ValueError(f"Yahoo no devolvio precio para {ticker}. Status: {respuesta.status_code}")
+
+    data = respuesta.json()
+    resultado = ((data.get('chart') or {}).get('result') or [])
+    if not resultado:
+        raise ValueError(f"Respuesta invalida de Yahoo para {ticker}: {data}")
+
+    meta = resultado[0].get('meta', {})
+    precio = meta.get('regularMarketPrice')
+    if precio is None:
+        cierres = (((resultado[0].get('indicators') or {}).get('quote') or [{}])[0]).get('close') or []
+        cierres_validos = [c for c in cierres if c is not None]
+        if not cierres_validos:
+            raise ValueError(f"Yahoo no devolvio close valido para {ticker}")
+        precio = cierres_validos[-1]
+
+    return float(precio)
+
+
+def obtener_precio_local_tradingview(symbols=None):
+    symbols = symbols or SPY_LOCAL_SYMBOLS
+    body = {
+        'symbols': {'tickers': symbols, 'query': {'types': []}},
+        'columns': ['close']
+    }
+    respuesta = requests.post(TRADINGVIEW_SCANNER_URL, json=body, timeout=10)
+    if respuesta.status_code != 200:
+        raise ValueError(f"TradingView no devolvio precio local. Status: {respuesta.status_code}")
+
+    data = respuesta.json()
+    resultados = data.get('data') or []
+    for row in resultados:
+        valores = row.get('d') or []
+        if valores and valores[0] is not None:
+            return float(valores[0]), row.get('s', '')
+
+    raise ValueError('TradingView no devolvio close valido para CEDEAR SPY')
 
 
 def obtener_usdt_ars_binance_o_fallback():
@@ -74,10 +124,19 @@ def leer_inversiones_notion():
             fecha_inv = datetime.strptime(fecha_str, "%Y-%m-%d")
             inv_inicial = props.get('Inversion Inicial (ARS/USDT)', {}).get('number') or 0
             datos_inv = {'activo': activo, 'fecha': fecha_inv, 'inicial': inv_inicial}
+            datos_inv['cotizacion_compra'] = props.get('Cotizacion de Compra', {}).get('number') or 0
             if activo == 'Bitcoin':
                 datos_inv['cantidad'] = props.get('Cantidad Obtenida', {}).get('number') or 0
-            elif 'SP-500' in activo or 'SPY' in activo:
+            elif es_activo_sp500(activo):
                 datos_inv['cantidad'] = props.get('Cantidad Obtenida', {}).get('number') or 0
+                # Nuevas columnas sugeridas en Notion para no depender de cantidad manual:
+                # - "SPY Compra (USDT)": precio de SPYUSDT al momento de compra
+                # - "USDT/ARS Compra": tipo de cambio USDTARS al momento de compra
+                # - "Ratio CEDEAR SPY" (opcional): ratio usado en la compra
+                datos_inv['spy_compra_usdt'] = props.get('SPY Compra (USDT)', {}).get('number') or 0
+                datos_inv['usdt_ars_compra'] = props.get('USDT/ARS Compra', {}).get('number') or 0
+                ratio_compra = props.get('Ratio CEDEAR SPY', {}).get('number')
+                datos_inv['ratio_cedear_compra'] = ratio_compra if ratio_compra and ratio_compra > 0 else (SPY_CEDEAR_RATIO if SPY_CEDEAR_RATIO else 1)
             elif 'Frasco NaranjaX' in activo:
                 datos_inv['tna'] = props.get('TNA (%)', {}).get('number') or 0
             inversiones.append(datos_inv)
@@ -95,17 +154,57 @@ def procesar_datos(inversiones):
         valor_actual_ars = 0
         if inv['activo'] == 'Bitcoin':
             valor_actual_ars = (inv['cantidad'] * precio_btc) * dolar_cripto
-        elif 'SP-500' in inv['activo'] or 'SPY' in inv['activo']:
+        elif es_activo_sp500(inv['activo']):
             try:
-                simbolo = SPY_BINANCE_SYMBOL
-                if simbolo not in cache_precios:
-                    cache_precios[simbolo] = obtener_precio_simbolo_binance(simbolo)
-                precio_ref_usdt = cache_precios[simbolo]
-                ratio = SPY_CEDEAR_RATIO if SPY_CEDEAR_RATIO else 1
-                precio_estimado_cedear_ars = (precio_ref_usdt / ratio) * dolar_cripto
-                valor_actual_ars = inv.get('cantidad', 0) * precio_estimado_cedear_ars
+                cantidad_sp = inv.get('cantidad', 0) or 0
+
+                precio_cedear_local_ars = None
+                fuente_local = ''
+                clave_local = 'LOCAL_SPY'
+                try:
+                    if clave_local not in cache_precios:
+                        precio_local, simbolo_local = obtener_precio_local_tradingview(SPY_LOCAL_SYMBOLS)
+                        cache_precios[clave_local] = (precio_local, simbolo_local)
+                    precio_cedear_local_ars, fuente_local = cache_precios[clave_local]
+                except Exception:
+                    precio_cedear_local_ars = None
+
+                if cantidad_sp > 0:
+                    if precio_cedear_local_ars is not None:
+                        valor_actual_ars = cantidad_sp * precio_cedear_local_ars
+                    else:
+                        clave_spy = f"YAHOO_{SPY_YAHOO_TICKER}"
+                        if clave_spy not in cache_precios:
+                            cache_precios[clave_spy] = obtener_precio_spy_yahoo(SPY_YAHOO_TICKER)
+                        precio_spy_actual_usd = cache_precios[clave_spy]
+                        ratio = inv.get('ratio_cedear_compra', 0) or (SPY_CEDEAR_RATIO if SPY_CEDEAR_RATIO else 1)
+                        precio_estimado_cedear_ars = (precio_spy_actual_usd / ratio) * dolar_cripto
+                        valor_actual_ars = cantidad_sp * precio_estimado_cedear_ars
+                else:
+                    cotizacion_compra = inv.get('cotizacion_compra', 0) or 0
+                    spy_compra_usdt = inv.get('spy_compra_usdt', 0) or 0
+                    usdt_ars_compra = inv.get('usdt_ars_compra', 0) or 0
+                    ratio_compra = inv.get('ratio_cedear_compra', 0) or (SPY_CEDEAR_RATIO if SPY_CEDEAR_RATIO else 1)
+
+                    if cotizacion_compra > 0 and precio_cedear_local_ars is not None:
+                        cantidad_implicita = inv['inicial'] / cotizacion_compra
+                        valor_actual_ars = cantidad_implicita * precio_cedear_local_ars
+                    elif spy_compra_usdt > 0 and usdt_ars_compra > 0:
+                        clave_spy = f"YAHOO_{SPY_YAHOO_TICKER}"
+                        if clave_spy not in cache_precios:
+                            cache_precios[clave_spy] = obtener_precio_spy_yahoo(SPY_YAHOO_TICKER)
+                        precio_spy_actual_usd = cache_precios[clave_spy]
+                        # Reconstruye cantidad implicita desde ARS inicial y datos de compra.
+                        precio_compra_cedear_ars = (spy_compra_usdt / ratio_compra) * usdt_ars_compra
+                        cantidad_implicita = inv['inicial'] / precio_compra_cedear_ars if precio_compra_cedear_ars > 0 else 0
+
+                        precio_actual_cedear_ars = (precio_spy_actual_usd / ratio_compra) * dolar_cripto
+                        valor_actual_ars = cantidad_implicita * precio_actual_cedear_ars
+                    else:
+                        # Sin cantidad ni precios de compra, no puede estimarse rendimiento real.
+                        valor_actual_ars = inv['inicial']
             except Exception:
-                # Si el simbolo no existe en Binance, no rompe el dashboard.
+                # Si falla la cotizacion, no rompe el dashboard.
                 valor_actual_ars = inv['inicial']
         elif 'Frasco NaranjaX' in inv['activo']:
             dias_pasados = max(0, (hoy - inv['fecha']).days)
@@ -150,25 +249,33 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     total_inv = sum(iniciales); total_act = sum(actuales)
     
     fig = plt.figure(figsize=(16, 11))
+    fig.subplots_adjust(left=0.06, right=0.98)
     gs = fig.add_gridspec(2, 1, height_ratios=[0.7, 1.5], hspace=0.3)
     fig.suptitle(f"Dashboard de Inversiones | Actualizado: {obtener_hora_local().strftime('%d/%m/%Y %H:%M')}", fontsize=20, fontweight='bold')
     
     # 1. Rendimiento por Activo
     ax1 = fig.add_subplot(gs[0, 0])
     x = np.arange(len(nombres)); width = 0.35
-    ax1.bar(x - width/2, iniciales, width, color='#ced4da', label='Inversión Inicial')
+    bars_inicial = ax1.bar(x - width/2, iniciales, width, color='#ced4da', label='Inversión Inicial')
     bars = ax1.bar(x + width/2, actuales, width, color=['#2ecc71' if d['actual'] >= d['inicial'] else '#e74c3c' for d in datos], label='Valor Actual')
-    ax1.set_ylim(0, 1000000); ax1.yaxis.set_major_formatter(formato_ars); ax1.set_xticks(x); ax1.set_xticklabels(nombres); ax1.legend()
+    offset_top = 15000
+    ax1.set_ylim(0, 1000000)
+    ax1.yaxis.set_major_formatter(formato_ars); ax1.set_xticks(x); ax1.set_xticklabels(nombres); ax1.legend()
+    for bar in bars_inicial:
+        y = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2, y + offset_top, f"${y:,.0f}", ha='center', va='bottom', fontweight='bold', color='#495057')
     for i, bar in enumerate(bars):
         y = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2, y + 15000, f"${y:,.0f}\n({'+' if datos[i]['pct'] >= 0 else ''}{datos[i]['pct']:.1f}%)", ha='center', va='bottom', fontweight='bold')
+        ax1.text(bar.get_x() + bar.get_width()/2, y + offset_top, f"${y:,.0f}\n({'+' if datos[i]['pct'] >= 0 else ''}{datos[i]['pct']:.2f}%)", ha='center', va='bottom', fontweight='bold')
 
     # Subgrids de abajo
-    gs_bottom = gs[1, 0].subgridspec(1, 2, width_ratios=[0.8, 1.2], wspace=0.3)
+    gs_bottom = gs[1, 0].subgridspec(1, 2, width_ratios=[0.95, 1.05], wspace=0.22)
     
     # 2. Composición
     ax2 = fig.add_subplot(gs_bottom[0, 0])
-    ax2.pie([d['actual'] for d in datos if d['actual'] > 0], labels=[d['nombre_corto'] for d in datos if d['actual'] > 0], autopct='%1.1f%%', startangle=90, colors=['#F7931A', '#FF5A00', '#3498db', '#9b59b6'], wedgeprops=dict(width=0.4))
+    valores_comp = [d['actual'] if d['actual'] > 0 else d['inicial'] for d in datos if (d['actual'] > 0 or d['inicial'] > 0)]
+    etiquetas_comp = [d['nombre_corto'] for d in datos if (d['actual'] > 0 or d['inicial'] > 0)]
+    ax2.pie(valores_comp, labels=etiquetas_comp, autopct='%1.1f%%', startangle=90, center=(-0.75, 0), colors=['#F7931A', '#FF5A00', '#3498db', '#9b59b6'], wedgeprops=dict(width=0.4))
     ax2.set_title('Composición del Portafolio')
 
     # 3. Derecha (Variaciones + Cascada)
@@ -180,9 +287,10 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
     y_pos = np.arange(len(datos_ord))
     ax_var.barh(y_pos, [d['ganancia']/1000 for d in datos_ord], color=['#2ecc71' if d['ganancia'] >= 0 else '#e74c3c' for d in datos_ord])
     ax_var.set_yticks(y_pos); ax_var.set_yticklabels([d['nombre_corto'] for d in datos_ord]); ax_var.axvline(0, color='grey', lw=1)
-    
-    # --- CAMBIO AQUÍ: Escala X de 0 a 100k ---
-    ax_var.set_xlim(0, 100) # El eje está en miles (k), por lo que 100 = 100k
+    min_gain_k = min([d['ganancia']/1000 for d in datos_ord] + [0])
+    max_gain_k = max([d['ganancia']/1000 for d in datos_ord] + [0])
+    margen_k = max((max_gain_k - min_gain_k) * 0.12, 1)
+    ax_var.set_xlim(min_gain_k - margen_k, max_gain_k + margen_k)
     
     ax_var.xaxis.set_major_formatter(FuncFormatter(lambda v, _: formato_miles(v))); ax_var.set_title('Variaciones por Activo')
     for i, d in enumerate(datos_ord):
@@ -198,16 +306,17 @@ def generar_dashboard(datos, precio_btc, dolar_cripto):
         curr += d['ganancia']
     bottoms.append(0)
     bars_cascada = ax3.bar(cat_cascada, val_cascada, bottom=bottoms, color=['#34495e'] + ['#2ecc71' if d['ganancia'] >= 0 else '#e74c3c' for d in datos] + ['#3498db'])
+    offset_cascada = 15000
     ax3.set_ylim(0, 1000000); ax3.yaxis.set_major_formatter(formato_ars); ax3.set_title('Construcción del Capital')
 
-    # Etiquetas sobre Inversión Inicial y Capital Total
-    indices_destacados = [0, len(val_cascada) - 1]
-    for idx in indices_destacados:
+    # Etiquetas en todas las columnas para ver montos de BTC/NaranjaX/SP-500.
+    for idx in range(len(val_cascada)):
         bar = bars_cascada[idx]
         y_top = bottoms[idx] + val_cascada[idx]
+        y_label = y_top + offset_cascada if val_cascada[idx] >= 0 else bottoms[idx] + offset_cascada
         ax3.text(
             bar.get_x() + bar.get_width() / 2,
-            y_top + 15000,
+            y_label,
             f"${val_cascada[idx]:,.0f}",
             ha='center',
             va='bottom',
@@ -227,7 +336,7 @@ def generar_y_enviar_reporte(destino_id):
         ratio_spy = SPY_CEDEAR_RATIO if SPY_CEDEAR_RATIO else 1
         resumen = (f"🚀 *Reporte de Inversiones*\n\n💰 *Invertido:* ${total_inv:,.0f} ARS\n📈 *Valor Actual:* ${total_act:,.0f} ARS\n"
                    f"💵 *Ganancia:* ${total_act-total_inv:,.0f} ARS\n"
-                   f"📌 _Valuacion SP-500 estimada con ratio {ratio_spy} (simbolo {SPY_BINANCE_SYMBOL})_\n\n"
+                   f"📌 _SP-500: precio local CEDEAR (TradingView/BCBA) con fallback Yahoo {SPY_YAHOO_TICKER}. Ratio ref {ratio_spy}_\n\n"
                    f"📅 _Hora Local: {obtener_hora_local().strftime('%H:%M')}_")
         with open('dashboard_inversiones.png', 'rb') as f:
             bot.send_photo(destino_id, f, caption=resumen, parse_mode='Markdown')
@@ -246,4 +355,6 @@ def programador():
 if __name__ == '__main__':
     threading.Thread(target=programador, daemon=True).start()
     print(f"🤖 Bot iniciado. Hora local: {obtener_hora_local().strftime('%H:%M')}")
+    print("📤 Generando reporte inicial para validar que el bot responde desde la consola...")
+    generar_y_enviar_reporte(CHAT_ID)
     bot.infinity_polling()
